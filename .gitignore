@@ -1,0 +1,20 @@
+# This repository is a Unity package, not a Unity project — there is no Library/, Temp/ or Logs/
+# to ignore. Almost everything here is source, and every asset's .meta file must be committed
+# alongside it or GUID references break for whoever pulls next.
+
+# macOS
+.DS_Store
+._*
+
+# JetBrains / Visual Studio / VS Code
+.idea/
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.user
+
+# Unity leaves these behind when a package folder is opened directly
+*.tmp
+*.pidb
+*.booproj
