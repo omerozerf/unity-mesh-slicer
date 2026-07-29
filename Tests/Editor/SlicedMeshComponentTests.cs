@@ -18,6 +18,8 @@ namespace Loop.MeshSlicer.Tests
     /// </summary>
     public class SlicedMeshComponentTests
     {
+        private const string FixtureName = "SlicedMeshFixture";
+
         private GameObject _host;
         private Mesh _source;
 
@@ -25,7 +27,7 @@ namespace Loop.MeshSlicer.Tests
         public void SetUp()
         {
             _source = BuildFixtureMesh();
-            _host = new GameObject("SlicedMeshFixture", typeof(MeshFilter), typeof(MeshRenderer));
+            _host = new GameObject(FixtureName, typeof(MeshFilter), typeof(MeshRenderer));
             _host.GetComponent<MeshFilter>().sharedMesh = _source;
         }
 
@@ -34,7 +36,25 @@ namespace Loop.MeshSlicer.Tests
         {
             if (_host != null)
             {
+                // Two of these tests add the component the way the inspector does, which registers
+                // an undo entry. DestroyImmediate on an object Unity still has undo records for
+                // errors out, and an error here would abort the rest of this method and leave the
+                // fixture sitting in whatever scene the editor happens to have open — which is how
+                // test objects end up in a real scene file.
+                UnityEditor.Undo.ClearUndo(_host);
                 Object.DestroyImmediate(_host);
+            }
+
+            // Belt and braces: nothing this fixture creates may outlive the test, whatever went
+            // wrong above. These tests run against the open scene, so a leak is a diff in somebody's
+            // project.
+            foreach (GameObject stray in Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None))
+            {
+                if (stray != null && stray.name.StartsWith(FixtureName))
+                {
+                    UnityEditor.Undo.ClearUndo(stray);
+                    Object.DestroyImmediate(stray);
+                }
             }
 
             if (_source != null)
