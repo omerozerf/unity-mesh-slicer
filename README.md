@@ -8,11 +8,11 @@ their size and the plain middle absorbs the change.
 Add one line to the consuming project's `Packages/manifest.json`:
 
 ```json
-"com.loop.meshslicer": "file:../../../../MyPackages/MeshSlicer"
+"com.loop.meshslicer": "https://github.com/omerozerf/unity-mesh-slicer.git#v0.1.0"
 ```
 
-The `../` depth depends on where the project sits. From
-`UnityProjects/LoopProjects/<game>/<clone>/Packages/` it is four levels up, as above.
+Pin a tag rather than tracking `main`, so a project never changes underneath you. The repo is
+private, so the machine needs git credentials for GitHub — a working `git clone` of it is the test.
 
 To get the package's tests into the Test Runner, also add:
 
@@ -22,6 +22,21 @@ To get the package's tests into the Test Runner, also add:
 
 Unity only lists tests from packages **outside** the `Packages` folder when they are named in
 `testables` — without it the package works fine but its tests are invisible.
+
+## Working on the package itself
+
+A git package resolves into `Library/PackageCache/` and is **read-only** there. To change it, edit
+this repo, then release:
+
+```bash
+git commit -am "..." && git tag -a v0.2.0 -m "..." && git push --follow-tags
+```
+
+…and bump the tag in the consuming project's manifest.
+
+While iterating, point that manifest at a local checkout instead — `"file:../relative/path"` — so
+edits appear immediately. **Do not commit that line**: a `file:` path only resolves on a machine that
+has the folder at exactly that depth.
 
 ## Use
 
