@@ -129,6 +129,9 @@ density and the source mesh. **Anything added later that affects the output must
 ## Recommendation
 
 If this package gets more work, the order that pays: **per-material UV conditions** (small, closes a
-real correctness gap for multi-material models), then **export/finalize** (small, and it is the
-honest answer to "do not pay for slicing at runtime"), then **hierarchy + matrix space** (large, and
-everything in their feature list from composite slicing to modifiers depends on it).
+real correctness gap for multi-material models), then **export as an asset** (small — `FinalizeSlicing`
+already covers the runtime-cost half), then **hierarchy + matrix space** (large, and everything in
+their feature list from composite slicing to modifiers depends on it).
+
+That order, with sizes and the evidence behind each, is carried in **[ROADMAP.md](ROADMAP.md)** —
+this file stays the *why*, the roadmap is the *what next*.

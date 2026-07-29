@@ -185,19 +185,7 @@ imported asset. There is a test for it, because it is the failure this kind of t
 
 ## Not built yet
 
-Ordered by what they would actually buy; the reasoning, and how the commercial 27 Slicer solves each,
-is in **NOTES-27slicer.md**.
-
-- **Per-material UV conditions.** Decide UV slicing per material rather than per mesh, so a door can
-  tile its wood while the knob and hinges stay put. Small, and it closes a real correctness gap.
-- **Export the sliced mesh as a project asset.** `FinalizeSlicing()` already bakes the slicing into a
-  scene object; writing it out as a shareable `.asset` is the remaining step.
-- **Hierarchy slicing.** One component slicing several child meshes as one combined shape, with
-  children repositioned to match. Large — it needs the whole mapping moved into matrix space — but
-  everything else on a mature slicer's feature list depends on it.
-- **Per-island UV slicing.** Today the density fit is one line per axis for the whole mesh, so faces
-  that do not follow the axis get moved along with the rest. Fitting per UV island would let a model
-  with caps use the feature instead of being told it is a poor candidate.
-- **Child transforms.** Slicing only reshapes this object's mesh. Children keep their local positions,
-  so a model built from several parts needs each part sliced, or the parts repositioned by hand.
-- **Skinned meshes and MeshCollider.**
+The backlog lives in **[ROADMAP.md](ROADMAP.md)** — what a future version could add, what each would
+cost, and which two known behaviours are deliberate rather than defects. In short: a sample scene and
+a changelog are the most useful things missing; per-material UV control is the first real feature;
+hierarchy slicing is the large one everything else would build on.
