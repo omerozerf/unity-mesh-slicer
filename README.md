@@ -8,11 +8,19 @@ their size and the plain middle absorbs the change.
 Add one line to the consuming project's `Packages/manifest.json`:
 
 ```json
-"com.loop.meshslicer": "https://github.com/omerozerf/unity-mesh-slicer.git#v0.1.0"
+"com.loop.meshslicer": "https://github.com/omerozerf/unity-mesh-slicer.git#v0.2.0"
 ```
 
-Pin a tag rather than tracking `main`, so a project never changes underneath you. The repo is
-private, so the machine needs git credentials for GitHub — a working `git clone` of it is the test.
+Pin a tag rather than tracking `main`, so a project never changes underneath you.
+
+The repository is **private**, so Unity can only resolve that URL on a machine with GitHub
+credentials that have access to it. If the Package Manager reports that it cannot fetch the package,
+that is almost always what it means — `git clone https://github.com/omerozerf/unity-mesh-slicer.git`
+in a terminal is the one-command test, and if it prompts or fails, so will Unity. Ask the repo owner
+for access rather than working around it.
+
+Requires Unity **2021.3 or newer**. Developed and tested on Unity 6000.3; nothing in it is version
+sensitive, but that is what "tested" honestly covers.
 
 To get the package's tests into the Test Runner, also add:
 
@@ -66,8 +74,40 @@ plain scaling would — only the interior distribution differs.
 Normals and tangents are corrected with the mapping's derivative, so authored (toon / custom split)
 normals survive. `RecalculateNormals` is never called.
 
-**The source asset is never modified.** The generated mesh is marked `HideAndDontSave`, so it cannot
-be written into a scene or a prefab; disabling or removing the component restores the imported mesh.
+**The source asset is never modified.** The generated mesh is marked `HideAndDontSave`, so its data
+cannot be written into a scene or a prefab; disabling or removing the component restores the imported
+mesh, and a `BoxCollider` on the same object is restored with it.
+
+Saving a scene would otherwise write the MeshFilter's *reference* to that unsaveable mesh as empty, so
+the package swaps the real mesh back in for the duration of the save and re-slices immediately after.
+You will not notice it happen; the point is that a sliced object produces no diff in the scene file
+and no override on a prefab instance.
+
+## Using it in a build
+
+Nothing here is editor-only — the component works at runtime — but two things are worth deciding
+before you ship a scene that uses it.
+
+**Read/Write Enabled.** Slicing reads the model's vertices. In the Editor that always works; in a
+player, a model without *Read/Write Enabled* has had its mesh data freed and the component will log
+one error naming the model and disable itself. Either enable that setting (it costs memory), or bake
+the slicing at edit time — next paragraph.
+
+**Bake it if the size never changes at runtime.** The component checks for changes every frame, for
+every sliced object. If a prop is sliced once to a fixed size and then never resized, call
+`FinalizeSlicing()`: it keeps the sliced mesh, drops the don't-save flag so the mesh is a normal
+saveable object, and removes the component. After that the object is an ordinary MeshFilter with no
+per-frame cost and no Read/Write requirement.
+
+```csharp
+var slicer = GetComponent<SlicedMesh>();
+transform.localScale = finalSize;
+slicer.Rebuild();
+slicer.FinalizeSlicing();   // component removes itself; the sliced mesh stays
+```
+
+It is a manual call on purpose — a component that finalized itself would quietly break anyone who
+meant to keep resizing at runtime.
 
 ## Auto-detect
 
@@ -87,15 +127,17 @@ how fast, straight off the model — you never type a density. It reports two nu
 - **fit** (correlation) picks U or V. On a model that suits this it is not a close call: the tracking
   coordinate scores 1.00 and the other 0.00.
 - **off-line** (worst residual) is the go/no-go. It is how far the worst vertex sits from the measured
-  line, as a share of the UV range. **Read this one, not the fit.** A real sculpted model measured a
-  respectable 0.75 fit while a sixth of its vertices sat up to 45% off the line — those are faces
+  line, as a share of the UV range. **Read this one, not the fit.** Measured on a real sculpted prop:
+  a respectable 0.75 fit while a sixth of its vertices sat up to 45% off the line — those are faces
   whose UVs do not follow the axis at all (caps, mostly), and their texture would slide rather than
   tile. Anything above ~10% is flagged as poor, and the number is printed so you can judge it.
 
-**Requirements.** The texture's wrap mode must be **Repeat** — density preservation works by letting
-the UV run past its authored range, which on a Clamp texture smears the edge pixel and on an atlas
-samples whatever is next door. The inspector warns when it finds a bound texture that is not Repeat,
-but it cannot detect an atlas; that one is on you.
+**Requirements.** The material's main texture must wrap **Repeat** or **Mirror** — density
+preservation works by letting the UV run past its authored range, which on a Clamp texture smears the
+edge pixel and on an atlas samples whatever is next door. The inspector warns about the main texture's
+wrap mode; it cannot detect an atlas, so that one is on you. (Only the main texture is checked —
+ramps, masks and matcaps are routinely Clamp by design and are not sampled by the mesh's UVs, so
+flagging them would make the warning permanent and therefore useless.)
 
 Off by default, per axis. An axis left on **Stretch** produces byte-identical UVs, and at reference
 scale even an axis set to Preserve Density does — attaching the component still changes nothing.
@@ -111,19 +153,30 @@ Only the first UV channel is touched. `uv2` is the lightmap channel and is left 
   27 Slicer documents the same limitation and the same remedy — this is the shape of the technique,
   not a shortcoming of this implementation.)
 - **Skinned meshes and `MeshCollider` are not supported.** A `BoxCollider` on the same object is kept
-  in sync.
+  in sync — its authored centre and size are remapped, not replaced, and restored when the component
+  goes away.
 - **Static GameObjects are incompatible.** A mesh that is rewritten at runtime cannot also be batched
-  as static geometry.
+  as static geometry. (Bake with `FinalizeSlicing()` and the object can be static again.)
+- **Only triangle submeshes are sliced.** A quad, line or point submesh is copied through unchanged
+  and logs a warning naming it, rather than silently disappearing.
+- **Only this object's own `localScale` drives the slicing.** A parent's scale still stretches the
+  result the ordinary way, because that is the transform doing its job after the mesh is handed over.
 - **One material's worth of UV control.** UV slicing is set per axis for the whole mesh, so a model
   with several materials is all-or-nothing. See NOTES-27slicer.md — per-material conditions are the
   first thing worth adding.
 - **Texture in the middle stretches** unless you turn on UV slicing (above), and even then only on
   models whose unwrap follows the axis. The inspector prints the middle's stretch factor.
-- **Player builds need Read/Write Enabled** on the model. The Editor can read any mesh, so editor-only
-  projects need nothing; a mesh sliced in a build must have `isReadable` on in its import settings.
+- **Player builds need Read/Write Enabled**, or `FinalizeSlicing()` at edit time. See *Using it in a
+  build* above. (Note the Editor reads mesh data regardless of that import setting, so this never
+  shows up until someone builds.)
 - **`localScale` is read every frame** and the mesh is rebuilt when it changes. Intended for
   hand-placed scenery. Driving the scale from a tween rebuilds every frame — cheap for small props,
   worth measuring on a heavy mesh.
+- **One stranded mesh per sliced object per domain reload.** After a script recompile the component
+  builds a fresh mesh and the previous one is left for Unity to reclaim when the scene closes. It is
+  not cleaned up on purpose: a leftover mesh is indistinguishable from the mesh a *duplicated* object
+  is still rendering, and destroying that would break the sibling. There is a test for the duplicate
+  case; this is the price of it.
 - **Do not "Apply All" a sliced object to a prefab.** The generated mesh cannot be saved, so the
   prefab's mesh field would come out empty. Slice the instance, not the asset.
 
@@ -137,15 +190,14 @@ is in **NOTES-27slicer.md**.
 
 - **Per-material UV conditions.** Decide UV slicing per material rather than per mesh, so a door can
   tile its wood while the knob and hinges stay put. Small, and it closes a real correctness gap.
-- **Export the sliced mesh as an asset.** Bakes one size into a normal mesh, so a finished prop needs
-  no component and no per-frame check at all.
+- **Export the sliced mesh as a project asset.** `FinalizeSlicing()` already bakes the slicing into a
+  scene object; writing it out as a shareable `.asset` is the remaining step.
 - **Hierarchy slicing.** One component slicing several child meshes as one combined shape, with
   children repositioned to match. Large — it needs the whole mapping moved into matrix space — but
   everything else on a mature slicer's feature list depends on it.
 - **Per-island UV slicing.** Today the density fit is one line per axis for the whole mesh, so faces
   that do not follow the axis get moved along with the rest. Fitting per UV island would let a model
   with caps use the feature instead of being told it is a poor candidate.
-- **Mirror wrap mode** counts as tileable too; the warning currently only accepts Repeat.
 - **Child transforms.** Slicing only reshapes this object's mesh. Children keep their local positions,
   so a model built from several parts needs each part sliced, or the parts repositioned by hand.
 - **Skinned meshes and MeshCollider.**

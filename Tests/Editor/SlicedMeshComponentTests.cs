@@ -263,6 +263,179 @@ namespace Loop.MeshSlicer.Tests
         }
 
         [Test]
+        public void BoxCollider_KeepsItsAuthoredShape_WhenTheComponentIsAttached()
+        {
+            // A collider is often deliberately smaller than the model — a trimmed hitbox, a trigger
+            // around one part. Deriving it from the mesh bounds would silently replace that with
+            // the full model box, and at reference scale, where nothing is supposed to change.
+            var box = _host.AddComponent<BoxCollider>();
+            box.center = new Vector3(0f, 0.3f, 0f);
+            box.size = new Vector3(0.2f, 0.4f, 0.2f);
+
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0f, 0.1f, 0f);
+            slicer.MarginMax = new Vector3(0f, 0.1f, 0f);
+            slicer.Rebuild();
+
+            AssertVector(new Vector3(0f, 0.3f, 0f), box.center, "Authored collider centre was overwritten.");
+            AssertVector(new Vector3(0.2f, 0.4f, 0.2f), box.size, "Authored collider size was overwritten.");
+        }
+
+        [Test]
+        public void BoxCollider_IsRestored_WhenTheComponentGoesAway()
+        {
+            // Unlike the mesh, collider values are serialized into the scene — so a collider left in
+            // its sliced state is a permanent change to the project, not a temporary display.
+            var box = _host.AddComponent<BoxCollider>();
+            box.center = new Vector3(0f, 0.3f, 0f);
+            box.size = new Vector3(0.2f, 0.4f, 0.2f);
+
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0f, 0.1f, 0f);
+            slicer.MarginMax = new Vector3(0f, 0.1f, 0f);
+            _host.transform.localScale = new Vector3(1f, 5f, 1f);
+            slicer.Rebuild();
+
+            slicer.enabled = false;
+
+            AssertVector(new Vector3(0f, 0.3f, 0f), box.center,
+                "Collider centre was not restored; the scene keeps the sliced value.");
+            AssertVector(new Vector3(0.2f, 0.4f, 0.2f), box.size,
+                "Collider size was not restored; the scene keeps the sliced value.");
+        }
+
+        // Vector3 equality in NUnit goes through Equals, which compares floats exactly — and every
+        // value here has been through the mapping, so it carries the usual float dust.
+        private static void AssertVector(Vector3 expected, Vector3 actual, string message)
+        {
+            Assert.AreEqual(expected.x, actual.x, 1e-4f, message + " (x)");
+            Assert.AreEqual(expected.y, actual.y, 1e-4f, message + " (y)");
+            Assert.AreEqual(expected.z, actual.z, 1e-4f, message + " (z)");
+        }
+
+        [Test]
+        public void SqueezedMargins_ProduceFiniteUnitNormals()
+        {
+            // Shrink the object below the sum of its margins and the middle collapses to zero
+            // rendered length. Dividing a normal by that Jacobian gives infinity, which survives a
+            // plain magnitude check and reaches the vertex buffer as NaN.
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0f, 0.3f, 0f);
+            slicer.MarginMax = new Vector3(0f, 0.3f, 0f);
+            _host.transform.localScale = new Vector3(1f, 0.2f, 1f);
+            slicer.Rebuild();
+
+            Vector3[] normals = _host.GetComponent<MeshFilter>().sharedMesh.normals;
+            for (int i = 0; i < normals.Length; i++)
+            {
+                Vector3 n = normals[i];
+                Assert.IsFalse(float.IsNaN(n.x) || float.IsNaN(n.y) || float.IsNaN(n.z),
+                    $"Normal {i} is NaN: {n}");
+                Assert.IsFalse(float.IsInfinity(n.x) || float.IsInfinity(n.y) || float.IsInfinity(n.z),
+                    $"Normal {i} is infinite: {n}");
+                Assert.AreEqual(1f, n.magnitude, 1e-3f, $"Normal {i} is not unit length: {n}");
+            }
+        }
+
+        [Test]
+        public void SqueezedMargins_KeepTheMappingMonotonic()
+        {
+            // The same regime, seen from the geometry side: a negative middle would fold the mesh
+            // back through itself.
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0f, 0.3f, 0f);
+            slicer.MarginMax = new Vector3(0f, 0.3f, 0f);
+            _host.transform.localScale = new Vector3(1f, 0.2f, 1f);
+            slicer.Rebuild();
+
+            Vector3[] source = _source.vertices;
+            Vector3[] sliced = _host.GetComponent<MeshFilter>().sharedMesh.vertices;
+
+            for (int i = 0; i < source.Length; i++)
+            {
+                for (int j = 0; j < source.Length; j++)
+                {
+                    if (source[i].y < source[j].y - 1e-5f)
+                    {
+                        Assert.LessOrEqual(sliced[i].y, sliced[j].y + 1e-4f,
+                            "Vertex order on Y was reversed — the mapping folded.");
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void AttachingFromScript_CapturesTheCurrentScale_AsReference()
+        {
+            // AddComponent never runs Reset (only the inspector's add path does), so a component
+            // added from code used to be measured against scale 1 — and models routinely import at
+            // something else.
+            _host.transform.localScale = new Vector3(0.71f, 1.11f, 1.18f);
+
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0.05f, 0.05f, 0.05f);
+            slicer.MarginMax = new Vector3(0.05f, 0.05f, 0.05f);
+            slicer.Rebuild();
+
+            AssertVector(new Vector3(0.71f, 1.11f, 1.18f), slicer.ReferenceScale,
+                "Reference scale was not captured from the object.");
+
+            Vector3[] expected = _source.vertices;
+            Vector3[] actual = _host.GetComponent<MeshFilter>().sharedMesh.vertices;
+            for (int i = 0; i < expected.Length; i++)
+            {
+                Assert.AreEqual(expected[i].y, actual[i].y, 1e-4f,
+                    $"Vertex {i} moved even though the component was added at this very scale.");
+            }
+        }
+
+        [Test]
+        public void NegativeScale_ProducesTheSameShapeAsItsMagnitude()
+        {
+            // Mirroring is the transform's job; the mesh should be identical either way.
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0f, 0.1f, 0f);
+            slicer.MarginMax = new Vector3(0f, 0.1f, 0f);
+
+            _host.transform.localScale = new Vector3(1f, 3f, 1f);
+            slicer.Rebuild();
+            Vector3[] positive = (Vector3[])_host.GetComponent<MeshFilter>().sharedMesh.vertices.Clone();
+
+            _host.transform.localScale = new Vector3(1f, -3f, 1f);
+            slicer.Rebuild();
+            Vector3[] negative = _host.GetComponent<MeshFilter>().sharedMesh.vertices;
+
+            for (int i = 0; i < positive.Length; i++)
+            {
+                Assert.AreEqual(positive[i].y, negative[i].y, 1e-4f, $"Vertex {i} differs under negative scale.");
+            }
+        }
+
+        [Test]
+        public void FinalizeSlicing_LeavesTheSlicedMeshBehind_AndRemovesTheComponent()
+        {
+            // The answer to "what does this cost in a build": bake once, then stop paying for the
+            // per-frame check. The mesh has to survive the component's own OnDestroy to be useful.
+            SlicedMesh slicer = Attach();
+            slicer.MarginMin = new Vector3(0f, 0.1f, 0f);
+            slicer.MarginMax = new Vector3(0f, 0.1f, 0f);
+            _host.transform.localScale = new Vector3(1f, 4f, 1f);
+            slicer.Rebuild();
+
+            Mesh slicedBefore = _host.GetComponent<MeshFilter>().sharedMesh;
+            slicer.FinalizeSlicing();
+
+            Assert.IsNull(_host.GetComponent<SlicedMesh>(), "The component should be gone.");
+
+            Mesh after = _host.GetComponent<MeshFilter>().sharedMesh;
+            Assert.IsNotNull(after, "Finalizing destroyed the mesh it was supposed to keep.");
+            Assert.AreSame(slicedBefore, after);
+            Assert.AreNotSame(_source, after, "Finalizing must leave the sliced mesh, not the source.");
+            Assert.AreEqual(0, (int)(after.hideFlags & HideFlags.DontSave),
+                "A finalized mesh has to be saveable, or the scene stores nothing.");
+        }
+
+        [Test]
         public void UvSlicing_IsOff_ByDefault_AndLeavesUvsUntouched()
         {
             // The opt-in guarantee: a model that was never asked for UV slicing must come out with
@@ -421,9 +594,38 @@ namespace Loop.MeshSlicer.Tests
             return hi - lo;
         }
 
+        [Test]
+        public void AddingThroughTheInspector_CapturesTheSource()
+        {
+            // Not the same code path as AddComponent: only ObjectFactory runs Reset(), which is
+            // where the inspector-add behaviour lives. Every other test here uses AddComponent, so
+            // without this one the Reset() body is never executed by the suite at all.
+            var slicer = UnityEditor.ObjectFactory.AddComponent<SlicedMesh>(_host);
+
+            Assert.AreSame(_source, slicer.SourceMesh);
+            Assert.Greater(slicer.MarginMin.y, 0f, "Reset should have guessed margins from the model.");
+        }
+
+        [Test]
+        public void ResetFromTheContextMenu_DoesNotLeaveTheComponentSourceless()
+        {
+            // The header's Reset item wipes serialized fields *before* calling Reset(), so the
+            // source field arrives null while the MeshFilter still shows a generated mesh — which
+            // the component rightly refuses to adopt as a source. Without a recovery path that
+            // leaves it permanently unable to find the model again.
+            var slicer = UnityEditor.ObjectFactory.AddComponent<SlicedMesh>(_host);
+            slicer.Rebuild();
+
+            UnityEditor.Unsupported.SmartReset(slicer);
+
+            Assert.AreSame(_source, slicer.SourceMesh,
+                "After a context-menu Reset the component lost the imported mesh for good.");
+        }
+
         private SlicedMesh Attach()
         {
-            // AddComponent fires OnEnable, which is what a real attach does.
+            // AddComponent fires OnEnable, which is what a script-driven attach does. The
+            // inspector's add path goes through ObjectFactory and is covered separately.
             return _host.AddComponent<SlicedMesh>();
         }
 
@@ -440,6 +642,9 @@ namespace Loop.MeshSlicer.Tests
             var vertices = new Vector3[rows.Length * 4];
             var uvs = new Vector2[vertices.Length];
             var normals = new Vector3[vertices.Length];
+            // Tangents are transformed along a different rule from normals (with the mapping rather
+            // than against it), so the fixture carries them or that half of the code is untested.
+            var tangents = new Vector4[vertices.Length];
 
             for (int r = 0; r < rows.Length; r++)
             {
@@ -451,7 +656,11 @@ namespace Loop.MeshSlicer.Tests
                 for (int c = 0; c < 4; c++)
                 {
                     uvs[r * 4 + c] = new Vector2(c * 0.25f, rows[r]);
-                    normals[r * 4 + c] = new Vector3(vertices[r * 4 + c].x, 0f, vertices[r * 4 + c].z).normalized;
+                    Vector3 outward = new Vector3(vertices[r * 4 + c].x, 0f, vertices[r * 4 + c].z).normalized;
+                    normals[r * 4 + c] = outward;
+                    // Around the ring, perpendicular to the outward normal and to Y.
+                    Vector3 along = Vector3.Cross(Vector3.up, outward).normalized;
+                    tangents[r * 4 + c] = new Vector4(along.x, along.y, along.z, -1f);
                 }
             }
 
@@ -475,6 +684,7 @@ namespace Loop.MeshSlicer.Tests
 
             mesh.vertices = vertices;
             mesh.normals = normals;
+            mesh.tangents = tangents;
             mesh.uv = uvs;
             mesh.triangles = triangles.ToArray();
             mesh.RecalculateBounds();

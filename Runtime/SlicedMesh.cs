@@ -39,9 +39,15 @@ namespace Loop.MeshSlicer
     /// mesh is pre-divided by the scale so the transform's own multiply lands on the intended size.
     ///
     /// **Reference scale.** Rigid does not mean "at scale 1" — an FBX node usually imports at some
-    /// other scale (this project's Separator sits near 0.71/1.11/1.18). The scale in effect when the
-    /// component is attached is captured as the reference, and at that scale the generated mesh
-    /// equals the source exactly, so attaching the component changes nothing on screen.
+    /// other scale (a prop measured while building this sits near 0.71/1.11/1.18). The scale in
+    /// effect when the component is attached is captured as the reference, and at that scale the
+    /// generated mesh equals the source exactly, so attaching the component changes nothing on
+    /// screen.
+    ///
+    /// **In a build** this behaves like any other component: it runs, and its per-frame change check
+    /// runs with it. Call <see cref="FinalizeSlicing"/> once the size is final to bake the result and
+    /// remove the component. The model also needs Read/Write Enabled to be sliced in a player; see
+    /// the package README.
     ///
     /// Out of scope for now, and listed in the package README: skinned meshes and MeshCollider.
     /// A <see cref="BoxCollider"/> on the same object is kept in sync.
@@ -91,6 +97,18 @@ namespace Loop.MeshSlicer
                  "is no BoxCollider to update.")]
         [SerializeField] private bool _updateBoxCollider = true;
 
+        // The collider's authored center/size, captured the first time it is touched. Serialized,
+        // because the whole point is to still have it after a domain reload or a scene reopen —
+        // without it the component would have no way to give the collider back.
+        [SerializeField, HideInInspector] private bool _hasColliderSnapshot;
+        [SerializeField, HideInInspector] private Vector3 _colliderCenter;
+        [SerializeField, HideInInspector] private Vector3 _colliderSize;
+
+        // Whether _referenceScale was ever captured from a real object. Reset() covers the
+        // inspector's add path, but AddComponent from script does not run Reset at all, and a model
+        // whose node imports at a non-unit scale would then be measured against 1 and jump.
+        [SerializeField, HideInInspector] private bool _referenceCaptured;
+
         // Deliberately NOT [SerializeField]. Unity only serializes private fields that ask for it,
         // so a duplicated object starts with this null and builds its own mesh instead of quietly
         // sharing the original's — which is the failure mode this kind of tool is prone to.
@@ -108,6 +126,9 @@ namespace Loop.MeshSlicer
         private Mesh _lastSourceMesh;
         private bool _hasBuilt;
         private bool _uvsAreSliced;
+
+        // Set for the duration of FinalizeSlicing so the component's own teardown does not undo it.
+        private bool _finalizing;
 
         // Scratch buffers, reused across rebuilds — a mesh that rebuilds on every scale drag should
         // not allocate on every frame of that drag.
@@ -189,6 +210,17 @@ namespace Loop.MeshSlicer
             EnsureUvArrays();
             _meshFilter = GetComponent<MeshFilter>();
             CaptureSourceIfNeeded();
+
+            // Reset() only runs when the component is added through the inspector. Script-driven
+            // AddComponent skips it, so the reference scale is captured here as well — otherwise a
+            // model whose FBX node imports at, say, 1.11 would be treated as authored at 1 and
+            // change size the instant the component appeared.
+            if (!_referenceCaptured)
+            {
+                _referenceScale = transform.localScale;
+                _referenceCaptured = true;
+            }
+
             Rebuild();
         }
 
@@ -222,9 +254,19 @@ namespace Loop.MeshSlicer
 
         private void OnDisable()
         {
+            // Finalizing destroys this component on purpose, and the sliced mesh is meant to stay
+            // behind. Without this check the teardown below would undo the finalize a moment after
+            // it happened — Unity fires OnDisable on the way to OnDestroy.
+            if (_finalizing)
+            {
+                return;
+            }
+
             // Disabling should look like the component was never there — including in the scene
-            // file, which must never end up referencing the generated mesh.
+            // file, which must never end up referencing the generated mesh. Unity also calls this
+            // when the component is removed, which is what makes removal restore the model.
             RestoreSource();
+            RestoreBoxCollider();
             DestroyGenerated();
             _hasBuilt = false;
         }
@@ -245,8 +287,20 @@ namespace Loop.MeshSlicer
             // "never adopt a generated mesh" guard in CaptureSourceIfNeeded would (correctly)
             // refuse to find it again, leaving the component permanently sourceless.
             _meshFilter = GetComponent<MeshFilter>();
+
+            // The component header's Reset menu item is a different path from adding the component:
+            // it clears every serialized field *before* calling this, so _sourceMesh arrives null
+            // while the MeshFilter is still showing a generated mesh — which CaptureSourceIfNeeded
+            // then rightly refuses to adopt, leaving the component permanently sourceless. The last
+            // known source survives that wipe because it is not serialized.
+            if (_sourceMesh == null && _lastSourceMesh != null)
+            {
+                _sourceMesh = _lastSourceMesh;
+            }
+
             CaptureSourceIfNeeded();
             _referenceScale = transform.localScale;
+            _referenceCaptured = true;
             AutoDetectMargins();
         }
 
@@ -258,17 +312,32 @@ namespace Loop.MeshSlicer
             // leave a negative middle.
             ClampMargins();
 
-            if (isActiveAndEnabled)
+            if (!isActiveAndEnabled)
             {
-                Rebuild();
+                return;
             }
+
+#if UNITY_EDITOR
+            // Rebuild can destroy the generated mesh (when the source changed), and Unity forbids
+            // immediate destruction from inside OnValidate. Deferring one editor tick is enough,
+            // and the object may be gone by then.
+            UnityEditor.EditorApplication.delayCall += () =>
+            {
+                if (this != null && isActiveAndEnabled)
+                {
+                    Rebuild();
+                }
+            };
+#else
+            Rebuild();
+#endif
         }
 
         private void LateUpdate()
         {
-            // Cheap enough to run unconditionally: four vector compares in the common case. The
-            // alternative — reacting to transform changes — has no edit-mode-safe hook that also
-            // covers a parent's scale changing.
+            // Cheap enough to run unconditionally: in the common case five vector compares, a mesh
+            // reference check and a packed-enum compare. Note this runs in a player too — see
+            // FinalizeSlicing for how a shipped scene stops paying for it.
             if (NeedsRebuild())
             {
                 Rebuild();
@@ -296,6 +365,24 @@ namespace Loop.MeshSlicer
             {
                 return;
             }
+
+#if !UNITY_EDITOR
+            // Player builds only. In the Editor `isReadable` reports the *import setting* while the
+            // mesh data stays available anyway — most imported models come back false yet read
+            // fine — so checking it there would disable the component on nearly every model. In a
+            // player the flag is authoritative: the data really is gone, and reading it throws
+            // every frame with nothing pointing at the cause.
+            if (!_sourceMesh.isReadable)
+            {
+                Debug.LogError(
+                    $"[SlicedMesh] '{_sourceMesh.name}' is not readable, so it cannot be sliced in a " +
+                    "build. Enable Read/Write in the model's import settings, or call " +
+                    "FinalizeSlicing() at edit time so the build ships an already-sliced mesh. " +
+                    "Disabling this component.", this);
+                enabled = false;
+                return;
+            }
+#endif
 
             // A new source (or a first build) invalidates every cached buffer.
             if (_sourceVertices == null || _lastSourceMesh != _sourceMesh)
@@ -405,6 +492,13 @@ namespace Loop.MeshSlicer
 
             if (_meshFilter.sharedMesh != _generatedMesh)
             {
+                // Deliberately does NOT destroy whatever was there. A generated mesh on the filter
+                // that this component does not own looks identical to one it orphaned across a
+                // domain reload — and the common case is the first: duplicating an object (Ctrl+D)
+                // hands the copy a reference to the *original's* mesh, so cleaning up here kills a
+                // mesh another object is still rendering. The cost of not cleaning up is one
+                // stranded mesh per sliced object per domain reload, which Unity reclaims when the
+                // scene closes; the cost of getting it wrong is a visibly broken sibling object.
                 _meshFilter.sharedMesh = _generatedMesh;
             }
 
@@ -448,8 +542,9 @@ namespace Loop.MeshSlicer
         }
 
         /// <summary>
-        /// Puts the imported mesh back on the MeshFilter. Called when the component is disabled, and
-        /// by the editor before the component is removed.
+        /// Puts the imported mesh back on the MeshFilter. Called from <c>OnDisable</c> — which Unity
+        /// also fires when the component is removed, and that is the only mechanism making removal
+        /// restore the model. Also called by the save hook so scenes save with the real mesh.
         /// </summary>
         public void RestoreSource()
         {
@@ -466,8 +561,8 @@ namespace Loop.MeshSlicer
 
         /// <summary>
         /// Result of measuring one axis against the model's unwrap. Handed back by
-        /// <see cref="AutoFitUvDensity"/> so the editor can show the artist what it found rather
-        /// than silently acting on it.
+        /// <see cref="AutoFitUvDensity"/> so the editor can show what it found rather than silently
+        /// acting on it.
         /// </summary>
         public readonly struct UvFit
         {
@@ -694,21 +789,92 @@ namespace Loop.MeshSlicer
             // of the drag. Telling Unity that up front lets it pick the right buffer strategy.
             _generatedMesh.MarkDynamic();
 
-            // Vertex data is written by Rebuild; everything else is carried over untouched so the
-            // sliced mesh renders with the same materials, UVs and vertex colours as the original.
-            _generatedMesh.vertices = _sourceMesh.vertices;
+            // Vertex positions have to be set before the index buffer, because Unity validates
+            // indices against the vertex count. _targetVertices is already filled by the time this
+            // runs, so it doubles as that placeholder — copying the source's array first would be
+            // an allocation and a GPU upload thrown away two statements later.
+            _generatedMesh.vertices = _targetVertices;
             _generatedMesh.subMeshCount = _sourceMesh.subMeshCount;
 
             for (int i = 0; i < _sourceMesh.subMeshCount; i++)
             {
-                _generatedMesh.SetTriangles(_sourceMesh.GetTriangles(i), i, false);
+                MeshTopology topology = _sourceMesh.GetTopology(i);
+                if (topology == MeshTopology.Triangles)
+                {
+                    _generatedMesh.SetTriangles(_sourceMesh.GetTriangles(i), i, false);
+                    continue;
+                }
+
+                // Quads, lines and points are carried through unsliced rather than dropped.
+                // GetTriangles would return nothing for them and the submesh would simply vanish,
+                // which reads as a shader bug because the source asset still looks correct.
+                _generatedMesh.SetIndices(_sourceMesh.GetIndices(i), topology, i, false);
+                Debug.LogWarning(
+                    $"[SlicedMesh] Submesh {i} of '{_sourceMesh.name}' is {topology}; only Triangles " +
+                    "are sliced. That submesh is copied through unchanged and will not stretch.", this);
             }
 
             _generatedMesh.uv = _sourceMesh.uv;
             _generatedMesh.uv2 = _sourceMesh.uv2;
             _generatedMesh.uv3 = _sourceMesh.uv3;
             _generatedMesh.uv4 = _sourceMesh.uv4;
+            _generatedMesh.uv5 = _sourceMesh.uv5;
+            _generatedMesh.uv6 = _sourceMesh.uv6;
+            _generatedMesh.uv7 = _sourceMesh.uv7;
+            _generatedMesh.uv8 = _sourceMesh.uv8;
             _generatedMesh.colors = _sourceMesh.colors;
+        }
+
+        /// <summary>
+        /// Bakes the current slicing in and removes this component: the generated mesh loses its
+        /// don't-save flag, is handed over to the MeshFilter for good, and the per-frame rebuild
+        /// check goes away with the component.
+        ///
+        /// This is the answer to "what does this cost in a shipped build". A scene that is sliced
+        /// once at startup and never resized again should not keep paying for a component that
+        /// watches for changes that will not come. Call it after the final size is set:
+        ///
+        /// <code>
+        /// var slicer = GetComponent&lt;SlicedMesh&gt;();
+        /// transform.localScale = finalSize;
+        /// slicer.Rebuild();
+        /// slicer.FinalizeSlicing();
+        /// </code>
+        ///
+        /// It is deliberately a manual call. A component that finalized itself would be a trap for
+        /// anyone who meant to keep resizing at runtime, and a shared package should not change how
+        /// a scene behaves without being asked.
+        ///
+        /// Note for edit-mode use: the mesh becomes an ordinary scene object, so it will be written
+        /// into the scene or prefab on the next save. That is usually what you want when baking a
+        /// prop, and it is the one case where this package does add data to a scene.
+        /// </summary>
+        public void FinalizeSlicing()
+        {
+            Rebuild();
+
+            if (_generatedMesh == null)
+            {
+                return;
+            }
+
+            _generatedMesh.name = _sourceMesh != null ? _sourceMesh.name + " (Sliced)" : _generatedMesh.name;
+            _generatedMesh.hideFlags = HideFlags.None;
+
+            // Forgotten on purpose: the teardown path must not take the mesh with it now that the
+            // mesh is the object's real one.
+            _generatedMesh = null;
+            _hasBuilt = false;
+            _finalizing = true;
+
+            if (Application.isPlaying)
+            {
+                Destroy(this);
+            }
+            else
+            {
+                DestroyImmediate(this);
+            }
         }
 
         private void DestroyGenerated()
@@ -718,21 +884,32 @@ namespace Loop.MeshSlicer
                 return;
             }
 
+            DestroyMesh(_generatedMesh);
+            _generatedMesh = null;
+        }
+
+        private static void DestroyMesh(Mesh mesh)
+        {
             if (Application.isPlaying)
             {
-                Destroy(_generatedMesh);
+                Destroy(mesh);
             }
             else
             {
-                DestroyImmediate(_generatedMesh);
+                DestroyImmediate(mesh);
             }
-
-            _generatedMesh = null;
         }
 
         private bool NeedsRebuild()
         {
             if (!_hasBuilt || _generatedMesh == null || _sourceMesh != _lastSourceMesh)
+            {
+                return true;
+            }
+
+            // Something else swapped the mesh out from under us — another tool, or a script. Without
+            // this the component would sit quiet until one of its own inputs happened to change.
+            if (_meshFilter != null && _meshFilter.sharedMesh != _generatedMesh)
             {
                 return true;
             }
@@ -779,16 +956,52 @@ namespace Loop.MeshSlicer
                 return;
             }
 
-            // The collider is remapped through the same mapping as the vertices, so a physical edge
-            // stays on the visual edge it was placed against.
-            Bounds source = _sourceMesh.bounds;
+            // Remap the collider the artist authored, not the mesh's bounds. Deriving it from the
+            // bounds would silently replace a deliberately trimmed collider with the full model
+            // box the moment the component was added — and at reference scale, where the whole
+            // promise is that nothing changes.
+            if (!_hasColliderSnapshot)
+            {
+                _colliderCenter = box.center;
+                _colliderSize = box.size;
+                _hasColliderSnapshot = true;
+            }
+
+            Vector3 half = _colliderSize * 0.5f;
+            Vector3 sourceMin = _colliderCenter - half;
+            Vector3 sourceMax = _colliderCenter + half;
+
+            // Through the same mapping as the vertices, so a physical edge stays on the visual edge
+            // it was placed against.
             Vector3 min = new Vector3(
-                axisX.Remap(source.min.x), axisY.Remap(source.min.y), axisZ.Remap(source.min.z));
+                axisX.Remap(sourceMin.x), axisY.Remap(sourceMin.y), axisZ.Remap(sourceMin.z));
             Vector3 max = new Vector3(
-                axisX.Remap(source.max.x), axisY.Remap(source.max.y), axisZ.Remap(source.max.z));
+                axisX.Remap(sourceMax.x), axisY.Remap(sourceMax.y), axisZ.Remap(sourceMax.z));
 
             box.center = (min + max) * 0.5f;
             box.size = max - min;
+        }
+
+        /// <summary>
+        /// Puts the BoxCollider back the way the artist left it. Without this the collider keeps
+        /// whatever sliced values it last had — and unlike the mesh, those are serialized into the
+        /// scene, so removing the component would leave the physics permanently wrong.
+        /// </summary>
+        private void RestoreBoxCollider()
+        {
+            if (!_hasColliderSnapshot)
+            {
+                return;
+            }
+
+            var box = GetComponent<BoxCollider>();
+            if (box == null)
+            {
+                return;
+            }
+
+            box.center = _colliderCenter;
+            box.size = _colliderSize;
         }
 
         // Moves one UV coordinate by the distance this axis displaced the vertex. A no-op unless the
@@ -806,9 +1019,16 @@ namespace Loop.MeshSlicer
 
         private static Vector3 SafeNormalize(Vector3 value, Vector3 fallback)
         {
+            float magnitude = value.sqrMagnitude;
+
             // A zero-length result means the source vector was degenerate or an axis collapsed;
-            // keeping the original beats handing the renderer a zero normal.
-            return value.sqrMagnitude > 1e-12f ? value.normalized : fallback;
+            // keeping the original beats handing the renderer a zero normal. Infinity has to be
+            // rejected explicitly: it passes a plain "greater than epsilon" test and then comes
+            // back from `normalized` as NaN, which reaches the vertex buffer and renders as a hole.
+            // (Written with IsNaN/IsInfinity rather than IsFinite — the latter is .NET Standard 2.1
+            // and this package supports Unity versions that compile against 2.0.)
+            bool usable = magnitude > 1e-12f && !float.IsNaN(magnitude) && !float.IsInfinity(magnitude);
+            return usable ? value.normalized : fallback;
         }
 
         #endregion

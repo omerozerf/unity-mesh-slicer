@@ -27,6 +27,13 @@ namespace Loop.MeshSlicer
         public const float MinScale = 1e-5f;
 
         /// <summary>
+        /// Smallest magnitude a Jacobian is allowed to take. Normals are divided by the Jacobian, so
+        /// a zero here would produce an infinite normal; this keeps the result merely very flat.
+        /// Reached when the rigid margins have been squeezed down to fill the whole axis.
+        /// </summary>
+        public const float MinJacobian = 1e-6f;
+
+        /// <summary>
         /// A solved single-axis mapping. Build it once per axis per rebuild, then call
         /// <see cref="Remap"/> per vertex — the per-vertex path is three compares and a lerp.
         /// </summary>
@@ -148,9 +155,9 @@ namespace Loop.MeshSlicer
         /// transform's job, exactly as with plain scaling).</param>
         /// <param name="referenceScale">The scale at which the model looks the way the artist
         /// authored it. At <paramref name="scale"/> == this, the mapping is the identity. This is
-        /// not cosmetic: FBX nodes routinely import at a non-unit scale (Separator sits at
-        /// ~0.71/1.11/1.18), so baselining on 1 would change the model the moment the component
-        /// is attached.</param>
+        /// not cosmetic: FBX nodes routinely import at a non-unit scale — a prop measured while
+        /// building this sits at roughly 0.71/1.11/1.18 — so baselining on 1 would change the model
+        /// the moment the component is attached.</param>
         public static Axis SolveAxis(
             float sourceMin, float sourceMax,
             float marginMin, float marginMax,
@@ -196,12 +203,20 @@ namespace Loop.MeshSlicer
             }
 
             float sourceMiddle = sourceLength - head - tail;
-            float renderedMiddle = renderedTotal - renderedHead - renderedTail;
+
+            // Clamped at zero on purpose. After the squeeze above, head + tail equals the total only
+            // to float precision, so this subtraction lands on a tiny negative about as often as on
+            // zero — and a negative middle reverses the mapping, folding the mesh through itself and
+            // inverting every normal in the middle.
+            float renderedMiddle = Mathf.Max(0f, renderedTotal - renderedHead - renderedTail);
 
             // Jacobians are expressed in compensated (mesh-local) units: rendered / absScale.
             float rigidJacobian = rigidScale / absScale;
             float middleJacobian = sourceMiddle > Mathf.Epsilon
-                ? (renderedMiddle / absScale) / sourceMiddle
+                // Floored for the same reason normals are divided by this: an exactly-zero Jacobian
+                // makes that division infinite, and an infinity survives a plain magnitude check to
+                // arrive in the vertex buffer as NaN.
+                ? Mathf.Max((renderedMiddle / absScale) / sourceMiddle, MinJacobian)
                 // No middle to stretch (margins cover the whole axis): the rigid map is the map.
                 : rigidJacobian;
 
@@ -223,7 +238,7 @@ namespace Loop.MeshSlicer
         /// artist never has to type it.
         ///
         /// It returns two quality numbers because **one of them is not enough**, measured on real
-        /// art: a separator model's best-fitting axis scores <c>r = 0.75</c>, which reads as
+        /// art: a sculpted prop's best-fitting axis scores <c>r = 0.75</c>, which reads as
         /// acceptable, while 16 of its 139 vertices sit up to 44.8% of the UV range off the line.
         /// So <paramref name="correlation"/> is for *choosing* between U and V, and
         /// <paramref name="worstResidual"/> is for deciding whether to use either — a model whose

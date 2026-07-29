@@ -1,4 +1,3 @@
-using Loop.MeshSlicer;
 using UnityEditor;
 using UnityEngine;
 
@@ -20,6 +19,8 @@ namespace Loop.MeshSlicer.EditorTools
         private static readonly Color SlicePlaneFill = new Color(0.25f, 0.85f, 1f, 0.08f);
 
         private static readonly string[] AxisNames = { "X", "Y", "Z" };
+
+        private static readonly Vector3[] s_PlaneCorners = new Vector3[4];
 
         private SerializedProperty _sourceMesh;
         private SerializedProperty _referenceScale;
@@ -210,8 +211,13 @@ namespace Loop.MeshSlicer.EditorTools
 
         /// <summary>
         /// Preserving density means letting the texture run past its authored bounds, which only
-        /// works if the texture repeats. On a clamped or atlassed texture it smears the edge pixel
-        /// or samples a neighbour instead — silently, which is why this is worth saying out loud.
+        /// works if the texture repeats. On a clamped texture it smears the edge pixel instead —
+        /// silently, which is why this is worth saying out loud.
+        ///
+        /// Only the main texture is checked. Walking every texture property flags the wrong things:
+        /// ramps, masks and matcaps are commonly Clamp by design and are not sampled by the mesh's
+        /// UVs at all, so including them turns this into a warning that is always on and therefore
+        /// never read. (Measured in the authoring project: 50 of 50 toon ramps are Clamp.)
         /// </summary>
         private void DrawWrapModeWarning(SlicedMesh slicer)
         {
@@ -228,33 +234,22 @@ namespace Loop.MeshSlicer.EditorTools
 
             foreach (Material material in renderer.sharedMaterials)
             {
-                if (material == null || material.shader == null)
+                Texture texture = material == null ? null : material.mainTexture;
+
+                // Mirror tiles as well as Repeat does — it just alternates direction, which for a
+                // stretched middle is a seamless result too.
+                if (texture == null ||
+                    texture.wrapMode == TextureWrapMode.Repeat ||
+                    texture.wrapMode == TextureWrapMode.Mirror)
                 {
                     continue;
                 }
 
-                int count = material.shader.GetPropertyCount();
-                for (int i = 0; i < count; i++)
-                {
-                    if (material.shader.GetPropertyType(i) != UnityEngine.Rendering.ShaderPropertyType.Texture)
-                    {
-                        continue;
-                    }
-
-                    string name = material.shader.GetPropertyName(i);
-                    var texture = material.GetTexture(name);
-                    if (texture == null || texture.wrapMode == TextureWrapMode.Repeat)
-                    {
-                        continue;
-                    }
-
-                    EditorGUILayout.HelpBox(
-                        $"'{texture.name}' ({name}) has wrap mode {texture.wrapMode}. Preserving " +
-                        "density needs Repeat, or the texture will smear at its edge instead of " +
-                        "tiling.",
-                        MessageType.Warning);
-                    return;
-                }
+                EditorGUILayout.HelpBox(
+                    $"'{texture.name}' has wrap mode {texture.wrapMode}. Preserving density needs " +
+                    "Repeat or Mirror, or the texture will smear at its edge instead of tiling.",
+                    MessageType.Warning);
+                return;
             }
         }
 
@@ -295,6 +290,7 @@ namespace Loop.MeshSlicer.EditorTools
             }
 
             Bounds bounds = slicer.SourceMesh.bounds;
+            Vector3 scale = slicer.transform.localScale;
 
             using (new Handles.DrawingScope(SlicePlaneColor, slicer.transform.localToWorldMatrix))
             {
@@ -303,8 +299,17 @@ namespace Loop.MeshSlicer.EditorTools
                     float min = bounds.min[axis];
                     float max = bounds.max[axis];
 
-                    DrawSlicePlane(bounds, axis, min + slicer.MarginMin[axis]);
-                    DrawSlicePlane(bounds, axis, max - slicer.MarginMax[axis]);
+                    // The planes must be drawn where the cut lands in the *generated* mesh, not at
+                    // the raw source coordinate. The generated mesh is pre-divided by localScale and
+                    // this matrix multiplies it back, so an unmapped coordinate is off by the whole
+                    // scale factor — correct only while scale equals reference, i.e. never when the
+                    // artist is actually resizing something.
+                    SliceMath.Axis solved = SliceMath.SolveAxis(
+                        min, max, slicer.MarginMin[axis], slicer.MarginMax[axis],
+                        scale[axis], slicer.ReferenceScale[axis]);
+
+                    DrawSlicePlane(bounds, axis, solved.Remap(min + slicer.MarginMin[axis]));
+                    DrawSlicePlane(bounds, axis, solved.Remap(max - slicer.MarginMax[axis]));
                 }
             }
         }
@@ -325,7 +330,9 @@ namespace Loop.MeshSlicer.EditorTools
             int a = (axis + 1) % 3;
             int b = (axis + 2) % 3;
 
-            var corners = new Vector3[4];
+            // Reused rather than allocated: this runs six times per scene-view repaint, which is
+            // continuous while the artist drags the scale handle.
+            Vector3[] corners = s_PlaneCorners;
             for (int i = 0; i < 4; i++)
             {
                 var corner = Vector3.zero;

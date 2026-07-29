@@ -119,7 +119,8 @@ density and the source mesh. **Anything added later that affects the output must
 ## Also documented, and true for us
 
 - **Static GameObjects are incompatible.** Batching a mesh that is about to be rewritten cannot work.
-  We have never said so; we should.
+  Now documented in the README's Limitations, together with the note that a finalized object can be
+  static again.
 - **No shader modifications**, so any shader works. Same here.
 - **Prefabs, nested prefabs, prefab variants, LOD groups** are all supported by them. We have tested
   none of these. If a slicer ever goes into a prefab here, test the variant case first — and note our
