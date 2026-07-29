@@ -1,7 +1,7 @@
 {
     "name": "com.loop.meshslicer",
     "displayName": "Loop Mesh Slicer",
-    "version": "0.2.2",
+    "version": "0.2.3",
     "unity": "2021.3",
     "description": "9-slice-style non-destructive mesh stretching. Scale the object as usual: per-axis margins keep the ends rigid at their authored size while the middle absorbs the change. Works on any MeshFilter mesh, never modifies the source asset.",
     "keywords": [

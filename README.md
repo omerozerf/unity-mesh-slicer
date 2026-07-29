@@ -83,6 +83,12 @@ the package swaps the real mesh back in for the duration of the save and re-slic
 You will not notice it happen; the point is that a sliced object produces no diff in the scene file
 and no override on a prefab instance.
 
+That swap is tracked **per scene**, which matters if you edit several scenes at once. Unity batches the
+save callbacks — measured on 6000.3, two scenes come through as `saving:A → saving:B → saved:A →
+saved:B`, not one scene at a time — so a single shared list would lose the first scene's objects when
+the second one starts saving, leaving them un-sliced in the editor until something else touched them.
+Fixed in 0.2.3, with tests that drive a real two-scene save.
+
 ## Using it in a build
 
 Nothing here is editor-only — the component works at runtime — but two things are worth deciding
