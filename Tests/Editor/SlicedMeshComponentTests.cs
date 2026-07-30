@@ -64,6 +64,86 @@ namespace Loop.MeshSlicer.Tests
         }
 
         [Test]
+        public void AttachingToAnInactiveObject_StillInitializes_WhenMarginsAreDetected()
+        {
+            // The defect this pins: AddComponent on an INACTIVE GameObject runs no OnEnable, so
+            // nothing fetched the MeshFilter or captured the source — AutoDetectMargins then found
+            // no source and silently left the margins at zero, and a zero-margin slice is a plain
+            // stretch. The driver that hit this had its target hidden by ANOTHER system
+            // (SetActive(false)) at bind time; when the object came back, OnEnable captured the
+            // by-then-stretched transform as the reference scale, making the no-op permanent.
+            _host.SetActive(false);
+
+            var slicer = _host.AddComponent<SlicedMesh>();
+            slicer.AutoDetectMargins();
+
+            Assert.AreSame(_source, slicer.SourceMesh,
+                "AutoDetectMargins on an inactive object must self-initialize the source.");
+            Assert.Greater(slicer.MarginMax.y, 0f,
+                "Margins stayed zero — the slice would be a plain stretch.");
+        }
+
+        [Test]
+        public void AttachingToAnInactiveObject_DoesNotAdoptALaterStretchAsAuthored()
+        {
+            // Second half of the same hole: the reference scale. Initialize while inactive, let the
+            // driver stretch, THEN activate — OnEnable must keep the pinned reference rather than
+            // re-capture the stretched transform as "authored", which would make the slice compare
+            // the scale to itself and generate a mesh identical to the source.
+            _host.SetActive(false);
+
+            var slicer = _host.AddComponent<SlicedMesh>();
+            slicer.SetReferenceScale(_host.transform.localScale);
+            slicer.AutoDetectMargins();
+
+            _host.transform.localScale = new Vector3(1f, 12f, 1f);
+            _host.SetActive(true);
+
+            Mesh generated = _host.GetComponent<MeshFilter>().sharedMesh;
+            Assert.AreNotSame(_source, generated, "no generated mesh appeared on activation");
+
+            // Under a real slice at 12x, the cap vertices compress toward the ends in mesh space.
+            // A generated mesh with the source's own vertex layout means the reference was adopted
+            // from the stretched transform and the slice is a no-op.
+            float sourceTop = TopCapWidth(_source);
+            float generatedTop = TopCapWidth(generated);
+            Assert.Less(generatedTop, sourceTop * 0.5f,
+                "The generated mesh has the source's own cap width — the stretched scale was " +
+                "adopted as the reference and the slice does nothing.");
+        }
+
+        /// <summary>
+        /// Mesh-space width of the top cap along Y — the fixture mesh's long axis. Measured as the
+        /// span from the end of the largest inter-vertex gap (the empty middle) to the top.
+        /// </summary>
+        private static float TopCapWidth(Mesh mesh)
+        {
+            Vector3[] vertices = mesh.vertices;
+            var zs = new System.Collections.Generic.List<float>();
+            foreach (Vector3 v in vertices)
+            {
+                zs.Add(v.y);
+            }
+
+            zs.Sort();
+
+            // The fixture mesh (like the real art) is empty across the middle, so the largest gap
+            // separates the two caps; the top cap spans from the gap's end to max z.
+            float bestGap = 0f;
+            float gapHigh = zs[zs.Count - 1];
+            for (int i = 1; i < zs.Count; i++)
+            {
+                if (zs[i] - zs[i - 1] > bestGap)
+                {
+                    bestGap = zs[i] - zs[i - 1];
+                    gapHigh = zs[i];
+                }
+            }
+
+            return zs[zs.Count - 1] - gapHigh;
+        }
+
+        [Test]
         public void Attaching_AdoptsTheMeshFiltersMesh_AsSource()
         {
             // Regression: Unity runs Reset *after* OnEnable, so at Reset time the MeshFilter is

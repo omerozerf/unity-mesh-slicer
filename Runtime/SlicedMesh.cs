@@ -679,11 +679,48 @@ namespace Loop.MeshSlicer
         /// at the ends of a sliceable model, and the empty span between the clusters is what should
         /// stretch. Falls back to <see cref="FallbackMarginFraction"/> on axes with no clear gap.
         /// </summary>
+        /// <summary>
+        /// Pins the scale the source mesh is authored at. The component otherwise captures it from
+        /// the transform the first time it initializes — correct for hand-placed components, wrong
+        /// for a driver that attaches mid-flight to an object it has already scaled. Such a driver
+        /// knows the authored scale and should say so explicitly.
+        /// </summary>
+        public void SetReferenceScale(Vector3 referenceScale)
+        {
+            _referenceScale = referenceScale;
+            _referenceCaptured = true;
+        }
+
         public void AutoDetectMargins()
         {
+            // Self-initializing, and that is the fix for a real defect rather than convenience.
+            // `AddComponent` on an INACTIVE GameObject runs no OnEnable, so nothing has fetched the
+            // MeshFilter or captured the source yet — this method then found `_sourceMesh` null and
+            // returned silently, leaving the margins at zero. A zero-margin slice is a plain
+            // stretch, so the caller's next scale write smeared the caps with the component sitting
+            // right there looking attached. Observed live: a driver bound its target while another
+            // system had the object SetActive(false).
+            if (_meshFilter == null)
+            {
+                _meshFilter = GetComponent<MeshFilter>();
+            }
+
+            CaptureSourceIfNeeded();
+
             if (_sourceMesh == null)
             {
                 return;
+            }
+
+            // Same deferred-OnEnable hole, second half: with the object inactive the reference
+            // scale has not been captured either, and OnEnable would later capture whatever scale
+            // the driver had ALREADY written — a stretched transform read back as "authored", which
+            // turns the slice into a permanent no-op. Pin it now, while the caller is still at the
+            // scale it means as authored. SetReferenceScale exists for callers that know better.
+            if (!_referenceCaptured)
+            {
+                _referenceScale = transform.localScale;
+                _referenceCaptured = true;
             }
 
             Vector3 size = _sourceMesh.bounds.size;
