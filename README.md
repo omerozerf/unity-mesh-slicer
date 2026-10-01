@@ -46,6 +46,29 @@ While iterating, point that manifest at a local checkout instead — `"file:../r
 edits appear immediately. **Do not commit that line**: a `file:` path only resolves on a machine that
 has the folder at exactly that depth.
 
+## Vendoring as an embedded package
+
+For a project whose people cannot reach this private repo, copy the package into the project instead
+of pointing the manifest at git:
+
+```bash
+rsync -a --exclude='.git' --exclude='.DS_Store' --exclude='.gitignore' <this repo>/ <project>/Packages/com.loop.meshslicer/
+```
+
+Re-running the same command is how to update it. Make the change here first, commit and tag, then
+copy: the vendored folder is a copy, and the next rsync overwrites anything edited there.
+
+- **No manifest entry and no `testables` entry.** Unity picks up anything under `Packages/` as an
+  embedded package, and an embedded package's tests reach the Test Runner without `testables`.
+- **Name the folder `com.loop.meshslicer`.** Unity wants an embedded package's directory to match its
+  package name. Under any other name every reload logs *"Embedded package [com.loop.meshslicer] was
+  found in the directory […]. Please consider changing the directory name to match the package
+  name."* to `Editor.log`, not to the Console.
+- **Nothing records which version was copied.** `packages-lock.json` lists the package with
+  `"source": "embedded"` and no hash, so the `version` field in `package.json` is the only marker —
+  compare it on both sides after a sync.
+- The package has no project of its own, so run its tests from the consuming project after each sync.
+
 ## Use
 
 1. Select the object whose mesh should stretch.
