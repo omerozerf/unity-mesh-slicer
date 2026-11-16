@@ -48,13 +48,6 @@ nothing to match it.
 
 **Size:** small, and it gets easier the sooner it starts.
 
-### `LICENSE.md`
-
-An internal package in a private repo, so nothing is urgent — but a repository handed to another
-team with no licence file leaves reuse ambiguous. One paragraph settles it.
-
-**Size:** trivial.
-
 ### `package.json` metadata
 
 Missing `documentationUrl` (the Package Manager's "Documentation" link comes from this field, and

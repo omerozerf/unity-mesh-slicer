@@ -13,12 +13,6 @@ Add one line to the consuming project's `Packages/manifest.json`:
 
 Pin a tag rather than tracking `main`, so a project never changes underneath you.
 
-The repository is **private**, so Unity can only resolve that URL on a machine with GitHub
-credentials that have access to it. If the Package Manager reports that it cannot fetch the package,
-that is almost always what it means — `git clone https://github.com/omerozerf/unity-mesh-slicer.git`
-in a terminal is the one-command test, and if it prompts or fails, so will Unity. Ask the repo owner
-for access rather than working around it.
-
 Requires Unity **2021.3 or newer**. Developed and tested on Unity 6000.3; nothing in it is version
 sensitive, but that is what "tested" honestly covers.
 
@@ -48,8 +42,8 @@ has the folder at exactly that depth.
 
 ## Vendoring as an embedded package
 
-For a project whose people cannot reach this private repo, copy the package into the project instead
-of pointing the manifest at git:
+To keep a project self-contained rather than resolving the package from git, copy the package into
+the project instead of pointing the manifest at git:
 
 ```bash
 rsync -a --exclude='.git' --exclude='.DS_Store' --exclude='.gitignore' <this repo>/ <project>/Packages/com.loop.meshslicer/
@@ -218,3 +212,7 @@ The backlog lives in **[ROADMAP.md](ROADMAP.md)** — what a future version coul
 cost, and which two known behaviours are deliberate rather than defects. In short: a sample scene and
 a changelog are the most useful things missing; per-material UV control is the first real feature;
 hierarchy slicing is the large one everything else would build on.
+
+## License
+
+Released under the [MIT License](LICENSE.md).
